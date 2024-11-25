@@ -119,12 +119,22 @@ def is_anchor_link(url):
     return '#' in url
 
 def normalize_url(url):
-    """URLを正規化（末尾のスラッシュを統一し、日本語をデコード）"""
+    """URLを正規化（末尾のスラッシュを統一）"""
     # URLデコード（日本語などを読める形式に）
     decoded_url = unquote(url)
-    # 末尾のスラッシュを統一（最後にスラッシュをつける）
-    if not decoded_url.endswith('/'):
-        decoded_url += '/'
+    
+    # index.htmlを含むURLをルートURLに正規化
+    if decoded_url.lower().endswith('/index.html'):
+        decoded_url = decoded_url[:-10]  # '/index.html'の長さ(10)を削除
+    elif decoded_url.lower().endswith('index.html'):
+        decoded_url = decoded_url[:-9]  # 'index.html'の長さ(9)を削除
+    
+    # .htmlで終わるURLの場合は、末尾のスラッシュを削除
+    if decoded_url.lower().endswith('.html'):
+        return decoded_url
+    # それ以外の場合は、末尾にスラッシュを追加
+    elif not decoded_url.endswith('/'):
+        return decoded_url + '/'
     return decoded_url
 
 def contains_japanese(text):
@@ -243,6 +253,10 @@ def get_page_info(url):
         }
         response = requests.get(url, headers=headers, timeout=10)
         
+        # エンコーディングの自動検出と設定
+        if response.encoding == 'ISO-8859-1':
+            response.encoding = response.apparent_encoding
+        
         # 404エラーの場合は結果に含めない
         if response.status_code == 404:
             return None
@@ -276,12 +290,18 @@ def get_page_info(url):
         except Exception as e:
             st.error(f"タイトル取得エラー: {str(e)}")
         
-        # ディスクリプションの取得
+        # ディスクリプションの取得（大文字小文字両方に対応）
         try:
             description = ""
-            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            # name="description"または"Description"のメタタグを検索
+            meta_desc = soup.find('meta', attrs={'name': re.compile('^[Dd]escription$')})
             if meta_desc:
                 description = meta_desc.get('content', '').strip()
+            # property="og:description"のメタタグを検索
+            if not description:
+                og_desc = soup.find('meta', attrs={'property': 'og:description'})
+                if og_desc:
+                    description = og_desc.get('content', '').strip()
             result.update({
                 'description': description,
                 'description_length': len(description),
@@ -362,7 +382,11 @@ def get_all_links(url, base_domain):
         }
         response = requests.get(url, headers=headers, timeout=10)
         
-        # 404エラーの場合は空のセットを返す（エラーメッセージを表示しない）
+        # エンコーディングの自動検出と設定
+        if response.encoding == 'ISO-8859-1':
+            response.encoding = response.apparent_encoding
+        
+        # 404エラーの場合は空のセットを返す
         if response.status_code == 404:
             return set()
             
@@ -370,22 +394,36 @@ def get_all_links(url, base_domain):
         soup = BeautifulSoup(response.text, 'html.parser')
         
         links = set()
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            absolute_url = urljoin(url, href)
-            
-            # アンカーリンク、ドメイン外のリンク、PDFファイル、プレビューURLを除外
-            if (not is_anchor_link(absolute_url) and 
-                is_same_domain(absolute_url, base_domain) and 
-                not absolute_url.lower().endswith('.pdf') and
-                not is_preview_url(absolute_url)):
-                # URLを正規化して追加
-                normalized_url = normalize_url(absolute_url)
-                links.add(normalized_url)
+        # aタグとフレームタグの両方からリンクを取得
+        for element in soup.find_all(['a', 'frame', 'iframe']):
+            href = element.get('href') or element.get('src')
+            if href:
+                # 相対パスを絶対パスに変換
+                absolute_url = urljoin(url, href)
+                parsed_url = urlparse(absolute_url)
+                
+                # index.htmlで終わるURLは除外（ルートURLと同じため）
+                if parsed_url.path.lower().endswith('index.html'):
+                    continue
+                
+                # 同じドメインのURLのみを対象とする
+                if (parsed_url.netloc == base_domain and
+                    not is_anchor_link(absolute_url) and
+                    not absolute_url.lower().endswith('.pdf') and
+                    not is_preview_url(absolute_url)):
+                    
+                    # URLを正規化（末尾のスラッシュを削除）
+                    normalized_url = absolute_url.rstrip('/')
+                    
+                    # .htmlで終わるURLの場合はそのまま追加
+                    if normalized_url.lower().endswith('.html'):
+                        links.add(normalized_url)
+                    # .htmlで終わらないURLの場合は、末尾のスラッシュを追加
+                    else:
+                        links.add(normalized_url + '/')
         
         return links
     except requests.exceptions.RequestException as e:
-        # 404エラー以外のエラーのみ表示
         if not isinstance(e, requests.exceptions.HTTPError) or e.response.status_code != 404:
             st.error(f"リンク取得エラー: {str(e)}")
         return set()
