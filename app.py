@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 import warnings
-from urllib.parse import urljoin, urlparse, unquote
+from urllib.parse import urljoin, urlparse, unquote, parse_qs
 import pandas as pd
 import re
 from html.parser import HTMLParser
@@ -33,7 +33,7 @@ def check_html_syntax(html_content):
     """HTMLの閉じタグをチェック"""
     syntax_errors = []
     
-    # PHPコードと特殊文字を一時的なプレースホルダーに置換
+    # PHPコードと特殊文字を一時的プレースホルダー置換
     replacements = []
     
     def replace_special_content(content):
@@ -139,13 +139,23 @@ def check_heading_order(soup):
     english_only_headings = []
     prev_level = 0
     
-    for heading in headings:
+    for i, heading in enumerate(headings, 1):
         current_level = int(heading.name[1])
         heading_text = heading.get_text().strip()
         
         # 見出しレベルのチェック
-        if prev_level > 0 and current_level - prev_level > 1:
-            heading_issues.append(f"見出しの順序が不適切: h{prev_level}からh{current_level}に飛んでいます")
+        if prev_level > 0:
+            # 見出しレベルが2以上飛んでいる場合のみチェック
+            # h2→h4, h3→h5 などの飛びを検出
+            if current_level - prev_level > 1 and current_level > prev_level:
+                heading_issues.append(
+                    f"h{prev_level}からh{current_level}に飛んでいます（{heading_text}）"
+                )
+        elif current_level != 1 and i == 1:
+            # 最初の見出しがh1でない場合
+            heading_issues.append(
+                f"最初の見出しがh1ではなくh{current_level}です（{heading_text}）"
+            )
         
         # 英語のみのチェック
         if heading_text and not contains_japanese(heading_text):
@@ -155,7 +165,12 @@ def check_heading_order(soup):
         
         prev_level = current_level
     
-    return heading_issues, english_only_headings
+    # 問題を連番で整形
+    formatted_issues = []
+    for i, issue in enumerate(heading_issues, 1):
+        formatted_issues.append(f"{i}: {issue}")
+    
+    return formatted_issues, english_only_headings
 
 def check_image_alt(soup, url):
     """画像のalt属性をチェック"""
@@ -166,52 +181,78 @@ def check_image_alt(soup, url):
     images_without_alt = []
     total_images = 0
     
-    # picture要素内のimg要素を確認
-    for picture in soup.find_all('picture'):
-        img = picture.find('img')
-        if img and img.get('src'):  # srcが存在する場合のみ処理
-            total_images += 1
-            alt = img.get('alt', '').strip()
-            src = img.get('src', '')
-            if not alt:
-                images_without_alt.append(src)
+    # すべてのimg要素を検索
+    all_images = soup.find_all('img')
     
-    # すべてのimg要素を検索（コンテナやクラスに関係なく）
-    all_images = soup.find_all('img', recursive=True)
-    valid_images = [img for img in all_images if img.get('src') or img.get('srcset')]  # 有効なsrcまたはsrcsetを持つ画像のみ
-    
-    for img in valid_images:
-        # picture要素内のimgは既にチェック済みなのでスキップ
-        if not img.find_parent('picture'):
-            total_images += 1
-            alt = img.get('alt', '').strip()
-            src = img.get('src', '') or img.get('srcset', '').split(',')[0].strip().split(' ')[0]
-            if not alt:
-                images_without_alt.append(src)
+    for img in all_images:
+        src = None
+        # src属性の確認
+        if img.get('src'):
+            src = img.get('src')
+        # srcset属性の確認
+        elif img.get('srcset'):
+            srcset = img.get('srcset')
+            # 最初の画像URLを取得
+            src = srcset.split(',')[0].strip().split(' ')[0]
+            
+        if src:
+            # 相対URLを絶対URLに変換
+            if not src.startswith(('http://', 'https://')):
+                src = urljoin(url, src)
+            
+            # データURLやbase64エンコードされた画像、PDFファイルは除外
+            if not src.startswith('data:') and not src.lower().endswith('.pdf'):
+                total_images += 1
+                alt = img.get('alt', '').strip()
+                if not alt:
+                    if src not in images_without_alt:
+                        images_without_alt.append(src)
     
     # 結果を返す
-    if not total_images:
-        return 'no_images'
+    if total_images == 0:
+        return '- 画像なし'
     elif images_without_alt:
-        return images_without_alt
-    elif total_images > 0:
-        return 'ok'
+        # URLをHTML形式のリンクに変換し、改行をbrタグに変換
+        linked_urls = [f'<span class="image-url">{i+1}: <a href="{img_url}" target="_blank">{img_url}</a></span>' 
+                      for i, img_url in enumerate(images_without_alt)]
+        return f'❌ alt属性なし:<br>' + ''.join(linked_urls)
     else:
-        return 'no_images'
+        return '✅ OK'
 
 def get_page_info(url):
     """ページのタイトルとディスクリプションを取得"""
     try:
+        # プレビューURLの場合はスキップ
+        if is_preview_url(url):
+            return {
+                'url': normalize_url(url),
+                'title': "スキップ（プレビューURL）",
+                'description': "スキップ（プレビューURL）",
+                'title_length': 0,
+                'description_length': 0,
+                'title_status': '- スキップ',
+                'description_status': '- スキップ',
+                'heading_issues': '- スキップ',
+                'english_only_headings': '- スキップ',
+                'images_without_alt': '- スキップ',
+                'html_syntax': '- スキップ'
+            }
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         response = requests.get(url, headers=headers, timeout=10)
+        
+        # 404エラーの場合は結果に含めない
+        if response.status_code == 404:
+            return None
+        
         response.raise_for_status()
         html_content = response.text
         soup = BeautifulSoup(html_content, 'html.parser')
         
         result = {
-            'url': normalize_url(url),
+            'url': f"<a href='{url}' target='_blank'>{url}</a>",  # URLをリンク化
             'title': "取得エラー",
             'description': "取得エラー",
             'title_length': 0,
@@ -252,34 +293,26 @@ def get_page_info(url):
         # 見出しタグのチェック
         try:
             heading_issues, english_only_headings = check_heading_order(soup)
-            result.update({
-                'heading_issues': '\n'.join(heading_issues) if heading_issues else '✅ OK',
-                'english_only_headings': '\n'.join(english_only_headings) if english_only_headings else '✅ OK'
-            })
+            # 問題がある場合は全ての問題を表示
+            if heading_issues:
+                result['heading_issues'] = '<br>'.join(heading_issues)
+            else:
+                result['heading_issues'] = '✅ OK'
+                
+            if english_only_headings:
+                result['english_only_headings'] = '<br>'.join(english_only_headings)
+            else:
+                result['english_only_headings'] = '✅ OK'
         except Exception as e:
             st.error(f"見出しチェックエラー: {str(e)}")
         
         # 画像のalt属性チェック
         try:
             alt_check_result = check_image_alt(soup, url)
-            if alt_check_result == 'skip':
-                if '/blog/' in url:
-                    images_without_alt_str = '✅ ブログページのためスキップ'
-                elif '/category/' in url:
-                    images_without_alt_str = '✅ カテゴリーページのためスキップ'
-                else:
-                    images_without_alt_str = '✅ スキップ'
-            elif alt_check_result == 'no_images':
-                images_without_alt_str = '- 画像なし'
-            elif alt_check_result == 'ok':
-                images_without_alt_str = '✅ OK'
-            elif isinstance(alt_check_result, list) and alt_check_result:
-                images_without_alt_str = '❌ alt属性なし:\n' + '\n'.join(alt_check_result)
-            else:
-                images_without_alt_str = '- 画像なし'
-            result['images_without_alt'] = images_without_alt_str
+            result['images_without_alt'] = alt_check_result
         except Exception as e:
             st.error(f"画像チェックエラー: {str(e)}")
+            result['images_without_alt'] = f'❌ エラー: {str(e)}'
         
         # HTML構文チェック
         try:
@@ -328,6 +361,11 @@ def get_all_links(url, base_domain):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         response = requests.get(url, headers=headers, timeout=10)
+        
+        # 404エラーの場合は空のセットを返す（エラーメッセージを表示しない）
+        if response.status_code == 404:
+            return set()
+            
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -336,28 +374,92 @@ def get_all_links(url, base_domain):
             href = a['href']
             absolute_url = urljoin(url, href)
             
-            # アンカーリンクとドメイン外のリンクを除外
-            if not is_anchor_link(absolute_url) and is_same_domain(absolute_url, base_domain):
+            # アンカーリンク、ドメイン外のリンク、PDFファイル、プレビューURLを除外
+            if (not is_anchor_link(absolute_url) and 
+                is_same_domain(absolute_url, base_domain) and 
+                not absolute_url.lower().endswith('.pdf') and
+                not is_preview_url(absolute_url)):
                 # URLを正規化して追加
                 normalized_url = normalize_url(absolute_url)
                 links.add(normalized_url)
         
         return links
+    except requests.exceptions.RequestException as e:
+        # 404エラー以外のエラーのみ表示
+        if not isinstance(e, requests.exceptions.HTTPError) or e.response.status_code != 404:
+            st.error(f"リンク取得エラー: {str(e)}")
+        return set()
     except Exception as e:
-        st.error(f"リンク取得エラー: {str(e)}")
+        st.error(f"予期せぬエラー: {str(e)}")
         return set()
 
+def is_preview_url(url):
+    """プレビューURLかどうかをチェック"""
+    preview_params = ['preview', 'preview_id', 'preview_nonce', '_thumbnail_id']
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+    
+    # プレビュー関連のパラメータが含まれているかチェック
+    return any(param in query_params for param in preview_params)
+
 def main():
-    st.title("WEBサイトSEOチェッカー")
-    st.write("指定したドメインのタイトル、ディスクリプション、見出し、画像のalt、HTML構文をチェックします")
+    # ページ幅の設定
+    st.set_page_config(
+        page_title="WEBサイトSEOチェッカー",
+        layout="wide",
+        initial_sidebar_state="auto"
+    )
+
+    # スタムCSS
+    st.markdown("""
+        <style>
+        .block-container {
+            max-width: 1104px;  # 736px * 1.5
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.title("🔍 WEBサイトSEOチェッカー")
+    
+    # バージョン情報と変更履歴
+    with st.expander("📋 バージョン情報と変更履歴"):
+        st.write("""
+        **現在のバージョン: v1.0.0** 🚀 (2024.11.26 リリース)
+        
+        **変更履歴：**
+        - v1.0.0 (2024.11.26)
+          - ✨ 初回リリース
+          - 🎯 基本的なSEO要素チェック機能を実装
+        - v0.9.0 (2024.11.25)
+          - 🔧 ベータ版リリース
+          - 🧪 テスト運用開始
+        """)
+    
+    st.write("""
+    このツールは指定したドメインのSEO要素を自動的にチェックします。
+
+    ### 📊 チェック項目：
+    1. 📝 タイトルタグ（文字数と内容、50文字以内）
+    2. 📄 メタディスクリプション（文字数と内容、140文字以内）
+    3. 📑 見出し構造（h1〜h6の階層関係）
+    4. 🖼️ 画像のalt属性（代替テキストの有無）
+    5. 🔧 HTML構文（閉じタグの有無）の正確性
+
+    ### 🚀 使い方：
+    1. 🔗 チェックしたいウェブサイトのURLを入力
+    2. ▶ 「チェック開始」ボタンをクリック
+    3. ✨ 自動的に全ページをチェックし、結果を表示
+    """)
     
     # 入力フォーム
-    url = st.text_input("チェックしたいWEBサイトのURLを入力してください", "")
+    url = st.text_input("🌐 チェックしたいWEBサイトのURLを入力してください", "")
     
-    if st.button("チェック開始") and url:
+    if st.button("🔍 チェック開始") and url:
         base_domain = urlparse(url).netloc
         
-        with st.spinner('サイトをチェック中...'):
+        with st.spinner('🔄 サイトをチェック中...'):
             # 訪問済みURLを管理
             visited_urls = set()
             urls_to_visit = {url}
@@ -375,7 +477,9 @@ def main():
                     
                     # ページ情報の取得
                     page_info = get_page_info(current_url)
-                    results.append(page_info)
+                    # 404エラー以外の結果のみを追加
+                    if page_info is not None:
+                        results.append(page_info)
                     
                     # 新しいリンクの取得
                     new_links = get_all_links(current_url, base_domain)
@@ -388,39 +492,128 @@ def main():
             # 結果の表示
             if results:
                 df = pd.DataFrame(results)
-                st.write(f"チェック完了！ 合計{len(results)}ページをチェックしました。")
+                st.write(f"✅ チェック完了！ 合計{len(results)}ページをチェックしました。")
                 
                 # タブで結果を表示
                 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                    "タイトル・ディスクリプション",
-                    "見出し構造",
-                    "英語のみの見出し",
-                    "画像alt属性",
-                    "HTML構文"
+                    "📝 タイトル・ディスクリプション",
+                    "📑 見出し構造",
+                    "🔤 英語のみの見出し",
+                    "🖼️ 画像alt属性",
+                    "🔧 HTML構文"
                 ])
                 
                 with tab1:
-                    st.subheader("タイトルとディスクリプションのチェック")
-                    st.dataframe(
-                        df[['url', 'title', 'title_length', 'title_status', 
-                            'description', 'description_length', 'description_status']]
+                    st.subheader("📊 タイトルとディスクリプションのチェック")
+                    # HTMLをレンダリング可能にする
+                    st.markdown("""
+                        <style>
+                        .dataframe a {
+                            color: #1E88E5;
+                            text-decoration: underline;
+                        }
+                        .dataframe td {
+                            max-width: 300px;
+                            white-space: normal !important;
+                            padding: 8px !important;
+                            vertical-align: top;
+                        }
+                        .dataframe th {
+                            padding: 8px !important;
+                            background-color: #f8f9fa;
+                        }
+                        .status-ok {
+                            color: #28a745;
+                            font-weight: bold;
+                        }
+                        .status-error {
+                            color: #dc3545;
+                            font-weight: bold;
+                        }
+                        .length-info {
+                            color: #6c757d;
+                            font-size: 0.9em;
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
+
+                    # データを整形
+                    display_df = df.copy()
+                    display_df['title'] = display_df.apply(
+                        lambda row: f"{row['title']}<br><span class='length-info'>({row['title_length']}文字)</span>", 
+                        axis=1
                     )
-                
+                    display_df['description'] = display_df.apply(
+                        lambda row: f"{row['description']}<br><span class='length-info'>({row['description_length']}文字)</span>", 
+                        axis=1
+                    )
+                    display_df['status'] = display_df.apply(
+                        lambda row: f"タイトル: <span class='{get_status_class(row['title_status'])}'>{row['title_status']}</span><br>" +
+                                  f"ディスクリプション: <span class='{get_status_class(row['description_status'])}'>{row['description_status']}</span>",
+                        axis=1
+                    )
+
+                    # 表示するカラムを選択
+                    st.write(display_df[['url', 'title', 'description', 'status']].to_html(
+                        escape=False, index=False), unsafe_allow_html=True)
+
                 with tab2:
-                    st.subheader("見出し構造のチェック")
-                    st.dataframe(df[['url', 'heading_issues']])
+                    st.subheader("📑 見出し構造のチェック")
+                    # HTMLをレンダリング可能にする
+                    st.markdown("""
+                        <style>
+                        .dataframe td {
+                            max-width: 300px;
+                            white-space: normal !important;
+                            padding: 8px !important;
+                            vertical-align: top;
+                            word-break: break-all;
+                        }
+                        .dataframe th {
+                            padding: 8px !important;
+                            background-color: #f8f9fa;
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
+                    st.write(df[['url', 'heading_issues']].to_html(escape=False, index=False), unsafe_allow_html=True)
                 
                 with tab3:
-                    st.subheader("英語のみの見出しのチェック")
-                    st.dataframe(df[['url', 'english_only_headings']])
+                    st.subheader("🔤 英語のみの見出しのチェック")
+                    st.write(df[['url', 'english_only_headings']].to_html(escape=False, index=False), unsafe_allow_html=True)
                 
                 with tab4:
-                    st.subheader("alt属性が設定されていない画像")
-                    st.dataframe(df[['url', 'images_without_alt']])
+                    st.subheader("🖼️ alt属性が設定されていない画像")
+                    # DataFrameの表示前にHTMLをレンダリング可能にする
+                    st.markdown("""
+                        <style>
+                        .dataframe a {
+                            color: #1E88E5;
+                            text-decoration: underline;
+                            word-break: break-all;
+                        }
+                        .dataframe td {
+                            max-width: 300px;
+                            white-space: normal !important;
+                            padding: 8px !important;
+                            vertical-align: top;
+                            word-break: break-all;
+                        }
+                        .dataframe th {
+                            padding: 8px !important;
+                            background-color: #f8f9fa;
+                        }
+                        .image-url {
+                            display: block;
+                            margin: 5px 0;
+                            word-break: break-all;
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
+                    st.write(df[['url', 'images_without_alt']].to_html(escape=False, index=False), unsafe_allow_html=True)
                 
                 with tab5:
-                    st.subheader("HTML構文チェック")
-                    st.dataframe(df[['url', 'html_syntax']])
+                    st.subheader("🔧 HTML構文チェック")
+                    st.write(df[['url', 'html_syntax']].to_html(escape=False, index=False), unsafe_allow_html=True)
                 
                 # CSVダウンロードボタン
                 csv = df.to_csv(index=False).encode('utf-8-sig')
@@ -432,6 +625,12 @@ def main():
                 )
             else:
                 st.error("チェック可能なページが見つかりませんでした。")
+
+def get_status_class(status):
+    """ステータスに応じたCSSクラスを返す"""
+    if '✅' in status or 'OK' in status:
+        return 'status-ok'
+    return 'status-error'
 
 if __name__ == "__main__":
     main() 
