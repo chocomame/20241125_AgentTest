@@ -121,7 +121,7 @@ def is_anchor_link(url):
 def normalize_url(url):
     """URLを正規化（末尾のスラッシュを統一）"""
     # URLデコード（日本語などを読める形式に）
-    decoded_url = unquote(url)
+    decoded_url = unquote(url, encoding='utf-8')
     
     # index.htmlを含むURLをルートURLに正規化
     if decoded_url.lower().endswith('/index.html'):
@@ -229,6 +229,81 @@ def check_image_alt(soup, url):
     else:
         return '✅ OK'
 
+def check_keyword_repetition(text):
+    """テキスト内のキーワード重複をチェック"""
+    if not text:
+        return []
+    
+    # 特定のストップワード（無視する単語）を定義
+    stop_words = {'の', 'や', 'が', 'を', 'に', 'へ', 'で', 'から', 'まで', 'より', 'も', 'は', '・', '|', '-'}
+    
+    # 許療科関連の用語（これらは重複をカウントしない）
+    medical_specialties = {
+        # 基本診療科
+        '内科', '外科', '眼科', '歯科', '耳鼻科', '皮膚科', '小児科',
+        '整形外科', '産婦人科', '泌尿器科', '精神科', '脳神経外科',
+        '放射線科', '麻酔科', '形成外科', '救急科',
+        
+        # 歯科の専門分野
+        '小児歯科', '矯正歯科', '審美歯科', '口腔外科', '歯科口腔外科',
+        '予防歯科', '保存歯科', '補綴歯科', 'インプラント', '一般歯科',
+        
+        # 内科の専門分野
+        '消化器内科', '循環器内科', '呼吸器内科', '脳神経内科',
+        '血液内科', '腎臓内科', '糖尿病内科', 'アレルギー科',
+        
+        # その他の専門分野
+        '消化器外科', '心臓血管外科', '呼吸器外科', '脳神経外科',
+        '小児外科', '乳腺外科', '気管食道科',
+        
+        # 医療機関を表す一般的な用語
+        '病院', 'クリニック', '医院', '診療所'
+    }
+    
+    # テキストを分かち書きして単語に分割
+    words = []
+    temp_words = re.findall(r'[一-龯ぁ-んァ-ンa-zA-Z0-9]+', text)
+    
+    # 複合語を優先的に検出
+    i = 0
+    while i < len(temp_words):
+        # 3単語の組み合わせをチェック
+        if i + 2 < len(temp_words):
+            triple = temp_words[i] + temp_words[i + 1] + temp_words[i + 2]
+            if triple in medical_specialties:
+                words.append(triple)
+                i += 3
+                continue
+        
+        # 2単語の組み合わせをチェック
+        if i + 1 < len(temp_words):
+            double = temp_words[i] + temp_words[i + 1]
+            if double in medical_specialties:
+                words.append(double)
+                i += 2
+                continue
+        
+        # 単語が2文字以上で、ストップワードでない場合のみ追加
+        if len(temp_words[i]) >= 2 and temp_words[i] not in stop_words:
+            # 診療科関連の用語かチェック
+            if temp_words[i] in medical_specialties:
+                words.append(temp_words[i])
+            else:
+                # 診療科以外の単語のみカウント対象とする
+                words.append(temp_words[i])
+        i += 1
+    
+    # 各単語の出現回数をカウント（診療科関連の用語は除外）
+    word_count = {}
+    for word in words:
+        if word not in medical_specialties:  # 診療科関連の用語は完全に除外
+            word_count[word] = word_count.get(word, 0) + 1
+    
+    # 3回以上出現する単語をリストアップ
+    repeated_words = [f"'{word}' ({count}回)" for word, count in word_count.items() if count >= 3]
+    
+    return repeated_words
+
 def get_page_info(url):
     """ページのタイトルとディスクリプションを取得"""
     try:
@@ -265,8 +340,11 @@ def get_page_info(url):
         html_content = response.text
         soup = BeautifulSoup(html_content, 'html.parser')
         
+        # 正規化されたURLを使用
+        normalized_url = normalize_url(url)
+        
         result = {
-            'url': f"<a href='{url}' target='_blank'>{url}</a>",  # URLをリンク化
+            'url': normalized_url,  # 正規化されたURLを使用
             'title': "取得エラー",
             'description': "取得エラー",
             'title_length': 0,
@@ -279,33 +357,62 @@ def get_page_info(url):
             'html_syntax': '❌ エラー'
         }
         
-        # タイトルの取得
+        # タイトルの取得と重複チェック
         try:
             title = soup.title.string.strip() if soup.title else "タイトルなし"
+            title_repetitions = check_keyword_repetition(title)
+            title_status = []
+            
+            # 長さチェック
+            if len(title) > 50:
+                title_status.append('❌ 長すぎます（50文字以内推奨）')
+            
+            # 重複チェック
+            if title_repetitions:
+                title_status.append(f'⚠️ キーワードの重複: {", ".join(title_repetitions)}')
+            
+            # 問題がない場合
+            if not title_status:
+                title_status = ['✅ OK']
+            
             result.update({
                 'title': title,
                 'title_length': len(title),
-                'title_status': '❌ 長すぎます' if len(title) > 50 else '✅ OK'
+                'title_status': '<br>'.join(title_status)
             })
         except Exception as e:
             st.error(f"タイトル取得エラー: {str(e)}")
         
-        # ディスクリプションの取得（大文字小文字両方に対応）
+        # ディスクリプションの取得と重複チェック
         try:
             description = ""
-            # name="description"または"Description"のメタタグを検索
             meta_desc = soup.find('meta', attrs={'name': re.compile('^[Dd]escription$')})
             if meta_desc:
                 description = meta_desc.get('content', '').strip()
-            # property="og:description"のメタタグを検索
             if not description:
                 og_desc = soup.find('meta', attrs={'property': 'og:description'})
                 if og_desc:
                     description = og_desc.get('content', '').strip()
+            
+            description_repetitions = check_keyword_repetition(description)
+            description_status = []
+            
+            # 長さチェック
+            if len(description) > 140:
+                description_status.append('❌ 長すぎます（140文字以内推奨）')
+            
+            # 重複チェック
+            if description_repetitions:
+                description_status.append(f'⚠️ キーワードの重複: {", ".join(description_repetitions)}')
+            
+            # 問題がない場合
+            if not description_status:
+                description_status = ['✅ OK']
+            
             result.update({
                 'description': description,
                 'description_length': len(description),
-                'description_status': '❌ 長すぎます' if len(description) > 140 else '✅ OK'
+                'description_status': '<br>'.join(description_status)
             })
         except Exception as e:
             st.error(f"ディスクリプション取得エラー: {str(e)}")
@@ -575,8 +682,12 @@ def main():
                         </style>
                     """, unsafe_allow_html=True)
 
-                    # データを整形
+                    # デ��を整形
                     display_df = df.copy()
+                    # URLの表示を修正
+                    display_df['url'] = display_df['url'].apply(
+                        lambda x: f'<a href="{x}" target="_blank">{unquote(x, encoding="utf-8")}</a>'
+                    )
                     display_df['title'] = display_df.apply(
                         lambda row: f"{row['title']}<br><span class='length-info'>({row['title_length']}文字)</span>", 
                         axis=1
@@ -613,11 +724,21 @@ def main():
                         }
                         </style>
                     """, unsafe_allow_html=True)
-                    st.write(df[['url', 'heading_issues']].to_html(escape=False, index=False), unsafe_allow_html=True)
+                    # URLカラムにリンクを追加
+                    display_df2 = df.copy()
+                    display_df2['url'] = display_df2['url'].apply(
+                        lambda x: f'<a href="{x}" target="_blank">{unquote(x, encoding="utf-8")}</a>'
+                    )
+                    st.write(display_df2[['url', 'heading_issues']].to_html(escape=False, index=False), unsafe_allow_html=True)
                 
                 with tab3:
                     st.subheader("🔤 英語のみの見出しのチェック")
-                    st.write(df[['url', 'english_only_headings']].to_html(escape=False, index=False), unsafe_allow_html=True)
+                    # URLカラムにリンクを追加
+                    display_df3 = df.copy()
+                    display_df3['url'] = display_df3['url'].apply(
+                        lambda x: f'<a href="{x}" target="_blank">{unquote(x, encoding="utf-8")}</a>'
+                    )
+                    st.write(display_df3[['url', 'english_only_headings']].to_html(escape=False, index=False), unsafe_allow_html=True)
                 
                 with tab4:
                     st.subheader("🖼️ alt属性が設定されていない画像")
@@ -647,20 +768,21 @@ def main():
                         }
                         </style>
                     """, unsafe_allow_html=True)
-                    st.write(df[['url', 'images_without_alt']].to_html(escape=False, index=False), unsafe_allow_html=True)
+                    # URLカラムにリンクを追加
+                    display_df4 = df.copy()
+                    display_df4['url'] = display_df4['url'].apply(
+                        lambda x: f'<a href="{x}" target="_blank">{unquote(x, encoding="utf-8")}</a>'
+                    )
+                    st.write(display_df4[['url', 'images_without_alt']].to_html(escape=False, index=False), unsafe_allow_html=True)
                 
                 with tab5:
                     st.subheader("🔧 HTML構文チェック")
-                    st.write(df[['url', 'html_syntax']].to_html(escape=False, index=False), unsafe_allow_html=True)
-                
-                # CSVダウンロードボタン
-                csv = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="結果をCSVでダウンロード",
-                    data=csv,
-                    file_name="seo_check_results.csv",
-                    mime="text/csv"
-                )
+                    # URLカラムにリンクを追加
+                    display_df5 = df.copy()
+                    display_df5['url'] = display_df5['url'].apply(
+                        lambda x: f'<a href="{x}" target="_blank">{unquote(x, encoding="utf-8")}</a>'
+                    )
+                    st.write(display_df5[['url', 'html_syntax']].to_html(escape=False, index=False), unsafe_allow_html=True)
             else:
                 st.error("チェック可能なページが見つかりませんでした。")
 
