@@ -320,7 +320,8 @@ def get_page_info(url):
                 'heading_issues': '- スキップ',
                 'english_only_headings': '- スキップ',
                 'images_without_alt': '- スキップ',
-                'html_syntax': '- スキップ'
+                'html_syntax': '- スキップ',
+                'status_code': 0
             }
 
         headers = {
@@ -331,20 +332,42 @@ def get_page_info(url):
         # エンコーディングの自動検出と設定
         if response.encoding == 'ISO-8859-1':
             response.encoding = response.apparent_encoding
+        elif 'charset' in response.headers.get('content-type', '').lower():
+            response.encoding = response.apparent_encoding
+        else:
+            response.encoding = 'utf-8'
         
-        # 404エラーの場合は結果に含めない
-        if response.status_code == 404:
-            return None
+        # ステータスコードを保存
+        status_code = response.status_code
+        
+        # 404エラーの場合は特別な結果を返す
+        if status_code == 404:
+            return {
+                'url': normalize_url(url),
+                'title': "404 エラー",
+                'description': "ページが見つかりません",
+                'title_length': 0,
+                'description_length': 0,
+                'title_status': '❌ 404エラー',
+                'description_status': '❌ 404エラー',
+                'heading_issues': '❌ 404エラー',
+                'english_only_headings': '❌ 404エラー',
+                'images_without_alt': '❌ 404エラー',
+                'html_syntax': '❌ 404エラー',
+                'status_code': 404
+            }
         
         response.raise_for_status()
         html_content = response.text
-        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # BeautifulSoupでパース（エンコーディングを指定）
+        soup = BeautifulSoup(html_content, 'html.parser', from_encoding=response.encoding)
         
         # 正規化されたURLを使用
         normalized_url = normalize_url(url)
         
         result = {
-            'url': normalized_url,  # 正規化されたURLを使用
+            'url': normalized_url,
             'title': "取得エラー",
             'description': "取得エラー",
             'title_length': 0,
@@ -354,12 +377,16 @@ def get_page_info(url):
             'heading_issues': '❌ エラー',
             'english_only_headings': '❌ エラー',
             'images_without_alt': '❌ エラー',
-            'html_syntax': '❌ エラー'
+            'html_syntax': '❌ エラー',
+            'status_code': status_code
         }
         
         # タイトルの取得と重複チェック
         try:
             title = soup.title.string.strip() if soup.title else "タイトルなし"
+            # タイトルのエンコーディングを確認して修正
+            if isinstance(title, bytes):
+                title = title.decode(response.encoding)
             title_repetitions = check_keyword_repetition(title)
             title_status = []
             
@@ -393,6 +420,10 @@ def get_page_info(url):
                 og_desc = soup.find('meta', attrs={'property': 'og:description'})
                 if og_desc:
                     description = og_desc.get('content', '').strip()
+            
+            # ディスクリプションのエンコーディングを確認して修正
+            if isinstance(description, bytes):
+                description = description.decode(response.encoding)
             
             description_repetitions = check_keyword_repetition(description)
             description_status = []
@@ -463,7 +494,8 @@ def get_page_info(url):
             'heading_issues': '❌ 接続エラー',
             'english_only_headings': '❌ 接続エラー',
             'images_without_alt': '❌ 接続エラー',
-            'html_syntax': '❌ 接続エラー'
+            'html_syntax': '❌ 接続エラー',
+            'status_code': 0
         }
     except Exception as e:
         st.error(f"予期せぬエラー: {str(e)}")
@@ -478,7 +510,8 @@ def get_page_info(url):
             'heading_issues': '❌ エラー',
             'english_only_headings': '❌ エラー',
             'images_without_alt': '❌ エラー',
-            'html_syntax': '❌ エラー'
+            'html_syntax': '❌ エラー',
+            'status_code': 0
         }
 
 def get_all_links(url, base_domain):
@@ -566,7 +599,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    st.title("🔍 WEBサイトSEOチェッカー")
+    st.title("🔍 検品チェックツール")
     
     # バージョン情報と変更履歴
     with st.expander("📋 バージョン情報と変更履歴"):
@@ -582,21 +615,43 @@ def main():
           - 🧪 テスト運用開始
         """)
     
-    st.write("""
-    このツールは指定したドメインのSEO要素を自動的にチェックします。
+    # チェック項目
+    with st.expander("📊 チェック項目の詳細"):
+        st.write("""
+        1. 📝 タイトルタグ
+           - 文字数（50文字以内）
+           - キーワードの重複チェック（診���科名を除く）
+           - 診療科名は重複を許容
 
-    ### 📊 チェック項目：
-    1. 📝 タイトルタグ（文字数と内容、50文字以内）
-    2. 📄 メタディスクリプション（文字数と内容、140文字以内）
-    3. 📑 見出し構造（h1〜h6の階層関係）
-    4. 🖼️ 画像のalt属性（代替テキストの有無）
-    5. 🔧 HTML構文（閉じタグの有無）の正確性
+        2. 📄 メタディスクリプション
+           - 文字数（140文字以内）
+           - キーワードの重複チェック（診療科名を除く）
+           - 診療科名は重複を許容
 
-    ### 🚀 使い方：
-    1. 🔗 チェックしたいウェブサイトのURLを入力
-    2. ▶ 「チェック開始」ボタンをクリック
-    3. ✨ 自動的に全ページをチェックし、結果を表示
-    """)
+        3. 📑 見出し構造（h1〜h6の階層関係）
+           - 見出しレベルの適切な階層構造
+           - 飛び階層のチェック
+
+        4. 🖼️ 画像のalt属性
+           - 代替テキストの有無
+           - ブログ・カテゴリーページはスキップ
+
+        5. 🔧 HTML構文
+           - 閉じタグの有無
+           - タグの正確性チェック
+
+        6. ⚠️ 404エラーページ
+           - 存在しないページの検出
+           - リンク切れの確認
+        """)
+    
+    # 使い方
+    with st.expander("🚀 使い方"):
+        st.write("""
+        1. 🔗 チェックしたいウェブサイトのURLを入力
+        2. ▶ 「チェック開始」ボタンをクリック
+        3. ✨ 自動的に全ページをチェックし、結果を表示
+        """)
     
     # 入力フォーム
     url = st.text_input("🌐 チェックしたいWEBサイトのURLを入力してください", "")
@@ -609,6 +664,7 @@ def main():
             visited_urls = set()
             urls_to_visit = {url}
             results = []
+            not_found_pages = []  # 404ページを記録
             
             # プログレスバーの初期化
             progress_bar = st.progress(0)
@@ -622,30 +678,40 @@ def main():
                     
                     # ページ情報の取得
                     page_info = get_page_info(current_url)
-                    # 404エラー以外の結果のみを追加
-                    if page_info is not None:
+                    
+                    # 404エラーのページを記録
+                    if page_info and page_info.get('status_code') == 404:
+                        not_found_pages.append(page_info)
+                    # 404以外のページを結果に追加
+                    elif page_info is not None:
                         results.append(page_info)
                     
-                    # 新しいリンクの取得
-                    new_links = get_all_links(current_url, base_domain)
-                    urls_to_visit.update(new_links - visited_urls)
+                    # 新しいリンクの取得（404ページ以外）
+                    if page_info and page_info.get('status_code') != 404:
+                        new_links = get_all_links(current_url, base_domain)
+                        urls_to_visit.update(new_links - visited_urls)
                 
                 # プログレスバーの更新
                 progress = len(visited_urls) / (len(visited_urls) + len(urls_to_visit))
                 progress_bar.progress(min(progress, 1.0))
             
             # 結果の表示
-            if results:
+            if results or not_found_pages:
                 df = pd.DataFrame(results)
+                not_found_df = pd.DataFrame(not_found_pages) if not_found_pages else None
+                
                 st.write(f"✅ チェック完了！ 合計{len(results)}ページをチェックしました。")
+                if not_found_pages:
+                    st.write(f"⚠️ {len(not_found_pages)}件の404エラーページが見つかりました。")
                 
                 # タブで結果を表示
-                tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
                     "📝 タイトル・ディスクリプション",
                     "📑 見出し構造",
                     "🔤 英語のみの見出し",
                     "🖼️ 画像alt属性",
-                    "🔧 HTML構文"
+                    "🔧 HTML構文",
+                    "⚠️ 404エラー"
                 ])
                 
                 with tab1:
@@ -682,7 +748,7 @@ def main():
                         </style>
                     """, unsafe_allow_html=True)
 
-                    # デ��を整形
+                    # デを整形
                     display_df = df.copy()
                     # URLの表示を修正
                     display_df['url'] = display_df['url'].apply(
@@ -783,6 +849,17 @@ def main():
                         lambda x: f'<a href="{x}" target="_blank">{unquote(x, encoding="utf-8")}</a>'
                     )
                     st.write(display_df5[['url', 'html_syntax']].to_html(escape=False, index=False), unsafe_allow_html=True)
+                
+                with tab6:
+                    st.subheader("⚠️ 404エラーページ")
+                    if not_found_df is not None and not not_found_df.empty:
+                        # URLカラムにリンクを追加
+                        not_found_df['url'] = not_found_df['url'].apply(
+                            lambda x: f'<a href="{x}" target="_blank">{unquote(x, encoding="utf-8")}</a>'
+                        )
+                        st.write(not_found_df[['url']].to_html(escape=False, index=False), unsafe_allow_html=True)
+                    else:
+                        st.write("✅ 404エラーページは見つかりませんでした。")
             else:
                 st.error("チェック可能なページが見つかりませんでした。")
 
