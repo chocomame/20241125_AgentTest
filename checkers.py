@@ -3,6 +3,7 @@ import streamlit as st
 from html.parser import HTMLParser
 from bs4 import BeautifulSoup
 from utils import contains_japanese
+from janome.tokenizer import Tokenizer
 
 class HTMLSyntaxChecker(HTMLParser):
     def __init__(self):
@@ -34,7 +35,7 @@ def check_html_syntax(html_content):
     replacements = []
     
     def replace_special_content(content):
-        # PHPコー��
+        # PHPコー
         content = re.sub(r'<\?php.*?\?>', 
                         lambda match: f"PLACEHOLDER_{len(replacements)}",
                         content, flags=re.DOTALL)
@@ -95,7 +96,7 @@ def check_html_syntax(html_content):
                         ']',
                         '&copy;'  # 特殊文字エンティティを除外
                     ]):
-                        # 行全体を認てじ��グが存在するかチェック
+                        # 行全体を認てじグが存在するかチェック
                         full_line = original_line
                         if f'</{tag_name}>' in full_line:
                             continue  # 同じ行に閉じタグがある場合はスキップ
@@ -191,7 +192,7 @@ def check_image_alt(soup, url):
                 total_images += 1
                 alt = img.get('alt', '').strip()
                 if not alt:
-                    # 相対パを完全なURLに���換
+                    # 相対パを完全なURLに換
                     if src.startswith('/'):
                         full_src = base_url + src
                     elif src.startswith('../'):
@@ -218,109 +219,70 @@ def check_image_alt(soup, url):
         return '✅ OK'
 
 def check_keyword_repetition(text):
-    """テキスト内のキーワード重複をチェック"""
-    if not text:
-        return ['✅ OK']
-    
-    # 特定のストップワード（無視する単語）を定義
-    stop_words = {'の', 'や', 'が', 'を', 'に', 'へ', 'で', 'から', 'まで', 'り', 'も', 'は', '・', '|', '-', 'です', 'ます', 'した', 'する', 'いる', 'ある', 'れる', 'られる', 'など', 'どの', 'その', 'これ', 'それ', 'あれ', 'この', 'さん', '様', '氏', '方', 'ない', 'あり', 'なし', 'とき', 'もの', 'こと', 'ところ', 'できる', 'おり', 'なる', 'いく', 'しまう', 'たい', 'ます', 'です', 'ください'}
-    
-    # 診療科関連の用語（これらは重複をカウントしない）
-    medical_specialties = {
-        # 基本診療科
-        '内科', '外科', '眼科', '歯科', '耳鼻科', '皮膚科', '小児科',
-        '整形外科', '産婦人科', '泌尿器科', '精神科', '脳神経外科',
-        '放射線科', '麻酔科', '形成外科', '救急科',
-        
-        # 歯科の専門分野
-        '小児歯科', '矯正歯科', '審美歯科', '口腔外科', '歯科口腔外科',
-        '予防歯科', '保存歯科', '補綴歯科', 'インプラント', '一般歯科',
+    """
+    テキスト内のキーワード重複をチェックする（形態素解析使用）
+    """
+    if not text or len(text.strip()) == 0:
+        return "✅ OK"
 
-        # 内科の専門分野
-        '消化器内科', '循環器内科', '呼吸器内科', '脳神経内科',
-        '血液内科', '腎臓内科', '糖尿病内科', 'アレルギー科',
-        
-        # その他の専門分野
-        '消化器外科', '心臓血管外科', '呼吸器外科', '脳神経外科',
-        '小児外科', '乳腺外科', '気管食道科',
-        
-        # 医療機関を表す一般的な用語
-        '病院', 'クリニック', '医院', '診療所', '専門医'
+    # 診療科関連の用語（重複チェック対象外）
+    medical_terms = {
+        '内科', '外科', '眼科', '歯科', '小児歯科', '矯正歯科', '審美歯科', '口腔外科',
+        '消化器内科', '循環器内科', '脳神経内科', '消化器外科', '心臓血管外科',
+        '病院', 'クリニック', '医院', '診療所', '形成外科', '美容外科', '皮膚科',
+        '血管外科', '美容皮膚科', '婦人科'
     }
 
-    # テキストの前処理
-    # 括弧を空白に置換
-    text = re.sub(r'[（）「」『』【】［］\[\]]', ' ', text)
-    
-    # まず、文を句読点で分割
-    sentences = re.split(r'[、。,.]+', text)
-    
-    # キーワードの候補を収集
-    keyword_candidates = set()
-    # 2文字以上の連続した漢字、ひらがな、カタカナを抽出するパターン
-    pattern = r'[一-龯ぁ-んァ-ヶー]{2,}'
-    
-    # 各文から単語を抽出
-    for sentence in sentences:
-        # 空白で分割して基本単位を取得
-        words = sentence.strip().split()
-        for word in words:
-            # 各単語から日本語文字列を抽出
-            matches = re.finditer(pattern, word)
-            for match in matches:
-                keyword = match.group()
-                if keyword not in stop_words and keyword not in medical_specialties:
-                    # 単語の先頭から始まる部分文字列のみを候補とする
-                    for length in range(2, len(keyword) + 1):
-                        sub_keyword = keyword[:length]
-                        if len(sub_keyword) >= 2:
-                            keyword_candidates.add(sub_keyword)
-    
-    # キーワードの出現回数をカウント
+    # 医療用語から抽出する部分文字列（2文字以上）
+    medical_substrings = set()
+    for term in medical_terms:
+        # 2文字以上の部分文字列を抽出
+        for i in range(len(term)-1):
+            for j in range(i+2, len(term)+1):
+                substring = term[i:j]
+                if len(substring) >= 2:
+                    medical_substrings.add(substring)
+
+    # 無視する品詞
+    ignore_pos = {
+        '助詞', '助動詞', '記号', '接続詞', '感動詞', '副詞', '連体詞'
+    }
+
+    # Janomeのトークナイザーを初期化
+    tokenizer = Tokenizer()
+
+    # キーワードの出現回数を記録（表層形で記録）
     keyword_counts = {}
     
-    # 各キーワード候補について、テキスト全体での出現回数をカウント
-    for keyword in keyword_candidates:
-        count = len(re.findall(re.escape(keyword), text))
-        if count > 0:
-            keyword_counts[keyword] = count
+    # テキストを形態素解析
+    tokens = tokenizer.tokenize(text)
+    for token in tokens:
+        # 形態素情報を取得
+        pos = token.part_of_speech.split(',')[0]  # 品詞
+        surface = token.surface  # 表層形
+
+        # 以下の条件のトークンはスキップ
+        if (pos in ignore_pos or  # 無視する品詞
+            len(surface) < 2 or  # 1文字の単語
+            surface in medical_terms or  # 完全一致する医療用語
+            surface in medical_substrings):  # 医療用語の部分文字列
+            continue
+
+        # 名詞のみを対象とする（より厳密なチェック）
+        if pos == '名詞':
+            if surface not in keyword_counts:
+                keyword_counts[surface] = 0
+            keyword_counts[surface] += 1
+
+    # 重複チェック結果の生成（3回以上出現する単語のみ）
+    duplicates = {word: count for word, count in keyword_counts.items() if count >= 3}
     
-    # 3回以上出現するキーワードを抽出（長さ順にソート）
-    repeated_keywords = [(k, v) for k, v in keyword_counts.items() if v >= 3]
-    repeated_keywords.sort(key=lambda x: len(x[0]), reverse=True)
+    if not duplicates:
+        return "✅ OK"
     
-    # 包含関係にあるキーワードを除外
-    filtered_keywords = []
-    for i, (keyword1, count1) in enumerate(repeated_keywords):
-        is_included = False
-        # 先頭からの部分文字列でない場合は除外
-        for j, (keyword2, count2) in enumerate(repeated_keywords):
-            if i != j and keyword2.find(keyword1) == 0:  # 先頭からの一致のみを考慮
-                is_included = True
-                break
-        if not is_included:
-            filtered_keywords.append((keyword1, count1))
+    # 重複結果のメッセージ作成
+    message = "⚠️ キーワードの重複：\n"
+    for i, (word, count) in enumerate(sorted(duplicates.items(), key=lambda x: x[1], reverse=True), 1):
+        message += f"{i}. '{word}' が{count}回出現\n"
     
-    # 医療関連用語を除外
-    final_keywords = []
-    for keyword, count in filtered_keywords:
-        # キーワードが医療関連用語に完全一致する場合は除外
-        if keyword not in medical_specialties:
-            # キーワードが医療関連用語の一部として含まれる場合も除外
-            is_medical_term = False
-            for medical_term in medical_specialties:
-                if medical_term.find(keyword) != -1 or keyword.find(medical_term) != -1:
-                    is_medical_term = True
-                    break
-            if not is_medical_term:
-                final_keywords.append((keyword, count))
-    
-    if not final_keywords:
-        return ['✅ OK']
-    
-    # 警告メッセージを生成（詳細な形式）
-    warnings = ['⚠️ キーワードの重複：']
-    for i, (keyword, count) in enumerate(final_keywords, 1):
-        warnings.append(f"{i}. '{keyword}' が{count}回出現")
-    
-    return warnings
+    return message

@@ -120,8 +120,8 @@ def get_page_info(url):
                 title_status.append(f'❌ 長すぎます（50文字以内推奨）: 現在{title_length}文字')
             
             # 重複チェック
-            if title_repetitions and title_repetitions[0] != '✅ OK':
-                title_status.extend(title_repetitions)
+            if title_repetitions != '✅ OK':
+                title_status.append(title_repetitions)
             
             # 問題がない場合
             if not title_status:
@@ -154,7 +154,7 @@ def get_page_info(url):
             description_repetitions = check_keyword_repetition(description)
             description_status = []
             
-            # 文字数を計算実際の文字数をカウント）
+            # 文字数を計算（実際の文字数をカウント）
             description_length = len(description)
             
             # 長さチェック
@@ -162,8 +162,8 @@ def get_page_info(url):
                 description_status.append(f'❌ 長すぎます（140文字以内推奨）: 現在{description_length}文字')
             
             # 重複チェック
-            if description_repetitions and description_repetitions[0] != '✅ OK':
-                description_status.extend(description_repetitions)
+            if description_repetitions != '✅ OK':
+                description_status.append(description_repetitions)
             
             # 問題がない場合
             if not description_status:
@@ -363,7 +363,7 @@ def main():
                 ])
                 
                 with tab1:
-                    st.subheader("📊 タイトルとディスクリプションのチェック")
+                    st.subheader(" タイトルとディスクリプションのチェック")
                     st.markdown("""
                         <style>
                         .dataframe a {
