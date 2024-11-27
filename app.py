@@ -94,20 +94,34 @@ def get_page_info(url):
         
         # タイトルの取得と重複チェック
         try:
-            title = soup.title.string.strip() if soup.title else "タイトルなし"
+            title = ""
+            meta_title = soup.find('meta', attrs={'name': re.compile('^[Tt]itle$')})
+            if meta_title:
+                title = meta_title.get('content', '').strip()
+            
+            if not title:
+                og_title = soup.find('meta', attrs={'property': 'og:title'})
+                if og_title:
+                    title = og_title.get('content', '').strip()
+            
+            if not title and soup.title:
+                title = soup.title.string.strip()
+            
             # タイトルのエンコーディングを確認して修正
             if isinstance(title, bytes):
                 title = title.decode(response.encoding)
+            
             title_repetitions = check_keyword_repetition(title)
             title_status = []
             
-            # 長さチェック
-            if len(title) > 50:
-                title_status.append('❌ 長すぎます（50文字以内推奨）')
+            # タイトルの文字数チェック（50文字制限）
+            title_length = len(title)
+            if title_length > 50:
+                title_status.append(f'❌ 長すぎます（50文字以内推奨）: 現在{title_length}文字')
             
             # 重複チェック
-            if title_repetitions:
-                title_status.append(f'⚠️ キーワードの重複: {", ".join(title_repetitions)}')
+            if title_repetitions and title_repetitions[0] != '✅ OK':
+                title_status.extend(title_repetitions)
             
             # 問題がない場合
             if not title_status:
@@ -115,8 +129,8 @@ def get_page_info(url):
             
             result.update({
                 'title': title,
-                'title_length': len(title),
-                'title_status': '<br>'.join(title_status)
+                'title_length': title_length,
+                'title_status': '\n'.join(title_status).replace(':', '：')
             })
         except Exception:
             pass
@@ -140,13 +154,16 @@ def get_page_info(url):
             description_repetitions = check_keyword_repetition(description)
             description_status = []
             
+            # 文字数を計算実際の文字数をカウント）
+            description_length = len(description)
+            
             # 長さチェック
-            if len(description) > 140:
-                description_status.append('❌ 長すぎます（140文字以内推奨）')
+            if description_length > 140:
+                description_status.append(f'❌ 長すぎます（140文字以内推奨）: 現在{description_length}文字')
             
             # 重複チェック
-            if description_repetitions:
-                description_status.append(f'⚠️ キーワードの重複: {", ".join(description_repetitions)}')
+            if description_repetitions and description_repetitions[0] != '✅ OK':
+                description_status.extend(description_repetitions)
             
             # 問題がない場合
             if not description_status:
@@ -154,8 +171,8 @@ def get_page_info(url):
             
             result.update({
                 'description': description,
-                'description_length': len(description),
-                'description_status': '<br>'.join(description_status)
+                'description_length': description_length,
+                'description_status': '\n'.join(description_status).replace(':', '：')
             })
         except Exception:
             pass
@@ -394,18 +411,37 @@ def main():
                     
                     # ステータスクラスとメッセージの設定
                     def format_status(status_text):
-                        if '✅ OK' in status_text:
+                        # OKは緑文字
+                        if status_text == '✅ OK':
                             return f'<span class="status-ok">{status_text}</span>'
-                        elif '❌' in status_text:
+                        # 警告は赤文字
+                        elif '❌' in status_text or '⚠️' in status_text:
                             return f'<span class="status-error">{status_text}</span>'
-                        elif '⚠️' in status_text:
-                            return f'<span class="status-warning">{status_text}</span>'
                         return status_text
-
+                    
+                    # ステータス表示の設定
                     display_df['status'] = display_df.apply(
                         lambda row: (
-                            f"タイトル: {format_status(row['title_status'])}<br>" +
-                            f"ディスクリプション: {format_status(row['description_status'])}"
+                            f"タイトル: " + (
+                                "❌ 長すぎます（50文字以内推奨）<br>" + 
+                                row['title_status'].replace('\n', '<br>').replace('⚠️ キーワードの重複:', '⚠️ キーワードの重複：')
+                                if row['title_length'] > 50 and '重複' in row['title_status']
+                                else "❌ 長すぎます（50文字以内推奨）" 
+                                if row['title_length'] > 50
+                                else row['title_status'].replace('\n', '<br>').replace('⚠️ キーワードの重複:', '⚠️ キーワードの重複：')
+                                if '重複' in row['title_status']
+                                else "✅ OK"
+                            ) + "<br>" +
+                            f"ディスクリプション: " + (
+                                "❌ 長すぎます（140文字以内推奨）<br>" + 
+                                (row['description_status'].split('\n', 1)[1] if '\n' in row['description_status'] else '').replace('\n', '<br>')
+                                if row['description_length'] > 140 and '重複' in row['description_status']
+                                else "❌ 長すぎます（140文字以内推奨）" 
+                                if row['description_length'] > 140
+                                else row['description_status'].replace('\n', '<br>').replace('⚠️ キーワードの重複:', '⚠️ キーワードの重複：')
+                                if '重複' in row['description_status']
+                                else "✅ OK"
+                            )
                         ),
                         axis=1
                     )
@@ -554,7 +590,7 @@ def main():
                         )
                         st.write(not_found_df[['url']].to_html(escape=False, index=False), unsafe_allow_html=True)
                     else:
-                        st.write("✅ 404エラーページは見つかりませんでした。")
+                        st.write(" 404エラーページは見つかりませんでした。")
             else:
                 st.write("チェック可能なページが見つかりませんでした。")
 

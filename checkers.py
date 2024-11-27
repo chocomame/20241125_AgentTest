@@ -34,7 +34,7 @@ def check_html_syntax(html_content):
     replacements = []
     
     def replace_special_content(content):
-        # PHPコードを置換
+        # PHPコー換
         content = re.sub(r'<\?php.*?\?>', 
                         lambda match: f"PLACEHOLDER_{len(replacements)}",
                         content, flags=re.DOTALL)
@@ -95,7 +95,7 @@ def check_html_syntax(html_content):
                         ']',
                         '&copy;'  # 特殊文字エンティティを除外
                     ]):
-                        # 行全体を確認して閉じタグが存在するかチェック
+                        # 行全体を認てじタグが存在するかチェック
                         full_line = original_line
                         if f'</{tag_name}>' in full_line:
                             continue  # 同じ行に閉じタグがある場合はスキップ
@@ -191,7 +191,7 @@ def check_image_alt(soup, url):
                 total_images += 1
                 alt = img.get('alt', '').strip()
                 if not alt:
-                    # 相対パスを完全なURLに変換
+                    # 相対パを完全なURLに変換
                     if src.startswith('/'):
                         full_src = base_url + src
                     elif src.startswith('../'):
@@ -220,7 +220,7 @@ def check_image_alt(soup, url):
 def check_keyword_repetition(text):
     """テキスト内のキーワード重複をチェック"""
     if not text:
-        return []
+        return ['✅ OK']
     
     # 特定のストップワード（無視する単語）を定義
     stop_words = {'の', 'や', 'が', 'を', 'に', 'へ', 'で', 'から', 'まで', 'り', 'も', 'は', '・', '|', '-', 'です', 'ます', 'した', 'する', 'いる', 'ある', 'れる', 'られる', 'など', 'どの', 'その', 'これ', 'それ', 'あれ', 'この', 'さん', '様', '氏', '方', 'ない', 'あり', 'なし', 'とき', 'もの', 'こと', 'ところ', 'できる', 'おり', 'なる', 'いく', 'しまう', 'たい', 'ます', 'です', 'ください'}
@@ -247,51 +247,66 @@ def check_keyword_repetition(text):
         # 医療機関を表す一般的な用語
         '病院', 'クリニック', '医院', '診療所', '専門医'
     }
-    
+
     # テキストの前処理
-    # 句読点、括弧などを空白に置換
-    text = re.sub(r'[。、．，（）()「」『』｛｝\[\]【】]', ' ', text)
-    # 複数の空白を1つの空白に置換
-    text = re.sub(r'\s+', ' ', text)
+    # 括弧を空白に置換
+    text = re.sub(r'[（）「」『』【】［］\[\]]', ' ', text)
     
-    # 単語を抽出
-    words = []
-    word_positions = []  # 単語の位置を記録
+    # まず、文を句読点で分割
+    sentences = re.split(r'[、。,.]+', text)
     
-    # 固定の単語パターン（地名など）
-    fixed_patterns = ['八王子']
+    # キーワードの候補を収集
+    keyword_candidates = set()
+    # 2文字以上の連続した漢字、ひらがな、カタカナを抽出するパターン
+    pattern = r'[一-龯ぁ-んァ-ヶー]{2,}'
     
-    # 固定パターンを抽出し、位置を記録
-    for pattern in fixed_patterns:
-        for match in re.finditer(pattern, text):
-            word_positions.append((match.start(), match.end(), pattern))
+    # 各文から単語を抽出
+    for sentence in sentences:
+        # 空白で分割して基本単位を取得
+        words = sentence.strip().split()
+        for word in words:
+            # 各単語から日本語文字列を抽出
+            matches = re.finditer(pattern, word)
+            for match in matches:
+                keyword = match.group()
+                if keyword not in stop_words and keyword not in medical_specialties:
+                    # 単語の先頭から始まる部分文字列のみを候補とする
+                    for length in range(2, len(keyword) + 1):
+                        sub_keyword = keyword[:length]
+                        if len(sub_keyword) >= 2:
+                            keyword_candidates.add(sub_keyword)
     
-    # 2文字以上の連続した漢字、ひらがな、カタカナを抽出し、位置を記録
-    for match in re.finditer(r'[一-龯ぁ-んァ-ン]{2,}', text):
-        word = match.group()
-        if word not in fixed_patterns:  # 固定パターンと重複しないもののみ追加
-            word_positions.append((match.start(), match.end(), word))
+    # キーワードの出現回数をカウント
+    keyword_counts = {}
     
-    # 位置でソートし、重複を除去
-    word_positions.sort()
+    # 各キーワード候補について、テキスト全体での出現回数をカウント
+    for keyword in keyword_candidates:
+        count = len(re.findall(re.escape(keyword), text))
+        if count > 0:
+            keyword_counts[keyword] = count
     
-    # 重複しない範囲で単語を抽出
-    current_pos = 0
-    for start, end, word in word_positions:
-        if start >= current_pos:  # 前の単語と重複しない場合のみ追加
-            if word not in stop_words and word not in medical_specialties:
-                words.append(word)
-            current_pos = end
+    # 3回以上出現するキーワードを抽出（長さ順にソート）
+    repeated_keywords = [(k, v) for k, v in keyword_counts.items() if v >= 3]
+    repeated_keywords.sort(key=lambda x: len(x[0]), reverse=True)
     
-    # 各単語の出現回数をカウント
-    word_count = {}
-    for word in words:
-        word_count[word] = word_count.get(word, 0) + 1
+    # 包含関係にあるキーワードを除外
+    filtered_keywords = []
+    for i, (keyword1, count1) in enumerate(repeated_keywords):
+        is_included = False
+        # 先頭からの部分文字列でない場合は除外
+        for j, (keyword2, count2) in enumerate(repeated_keywords):
+            if i != j and keyword2.find(keyword1) == 0:  # 先頭からの一致のみを考慮
+                is_included = True
+                break
+        if not is_included:
+            filtered_keywords.append((keyword1, count1))
     
-    # 3回以上出現する単語をリストアップ
-    repeated_words = []
-    for word, count in word_count.items():
-        if count >= 3:
-            repeated_words.append(f"'{word}' ({count}回)")
+    if not filtered_keywords:
+        return ['✅ OK']
     
-    return repeated_words
+    # 警告メッセージを生成（詳細な形式）
+    warnings = ['⚠️ キーワードの重複:']
+    for i, (keyword, count) in enumerate(filtered_keywords, 1):
+        warnings.append(f"{i}. '{keyword}' が{count}回出現")
+    
+    return warnings
