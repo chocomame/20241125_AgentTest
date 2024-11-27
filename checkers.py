@@ -34,7 +34,7 @@ def check_html_syntax(html_content):
     replacements = []
     
     def replace_special_content(content):
-        # PHPコー換
+        # PHPコー��
         content = re.sub(r'<\?php.*?\?>', 
                         lambda match: f"PLACEHOLDER_{len(replacements)}",
                         content, flags=re.DOTALL)
@@ -95,7 +95,7 @@ def check_html_syntax(html_content):
                         ']',
                         '&copy;'  # 特殊文字エンティティを除外
                     ]):
-                        # 行全体を認てじタグが存在するかチェック
+                        # 行全体を認てじ��グが存在するかチェック
                         full_line = original_line
                         if f'</{tag_name}>' in full_line:
                             continue  # 同じ行に閉じタグがある場合はスキップ
@@ -191,7 +191,7 @@ def check_image_alt(soup, url):
                 total_images += 1
                 alt = img.get('alt', '').strip()
                 if not alt:
-                    # 相対パを完全なURLに変換
+                    # 相対パを完全なURLに���換
                     if src.startswith('/'):
                         full_src = base_url + src
                     elif src.startswith('../'):
@@ -301,12 +301,26 @@ def check_keyword_repetition(text):
         if not is_included:
             filtered_keywords.append((keyword1, count1))
     
-    if not filtered_keywords:
+    # 医療関連用語を除外
+    final_keywords = []
+    for keyword, count in filtered_keywords:
+        # キーワードが医療関連用語に完全一致する場合は除外
+        if keyword not in medical_specialties:
+            # キーワードが医療関連用語の一部として含まれる場合も除外
+            is_medical_term = False
+            for medical_term in medical_specialties:
+                if medical_term.find(keyword) != -1 or keyword.find(medical_term) != -1:
+                    is_medical_term = True
+                    break
+            if not is_medical_term:
+                final_keywords.append((keyword, count))
+    
+    if not final_keywords:
         return ['✅ OK']
     
     # 警告メッセージを生成（詳細な形式）
-    warnings = ['⚠️ キーワードの重複:']
-    for i, (keyword, count) in enumerate(filtered_keywords, 1):
+    warnings = ['⚠️ キーワードの重複：']
+    for i, (keyword, count) in enumerate(final_keywords, 1):
         warnings.append(f"{i}. '{keyword}' が{count}回出現")
     
     return warnings
